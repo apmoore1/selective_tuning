@@ -1,0 +1,46 @@
+{
+  "dataset_reader":{
+    "type": "sst_tokens",
+    "use_subtrees": false,
+    "granularity": "5-class",
+    "token_indexers": {
+        "tokens": {
+          "type": "pretrained_transformer_mismatched",
+          "model_name": "bert-base-cased"
+        }
+    }
+  },
+  "train_data_path": "./data/sst/trees/train.txt",
+  "validation_data_path": "./data/sst/trees/dev.txt",
+  "test_data_path": "./data/sst/trees/test.txt",  
+  "evaluate_on_test": true,
+  "model": {
+    "type": "modified_basic_classifier",        
+    "text_field_embedder": {
+      "token_embedders": {
+        "tokens": {
+          "type": "pretrained_transformer_mismatched",
+          "model_name": "bert-base-cased"
+          }
+      }
+    }
+  },    
+  "iterator": {
+    "type": "basic",
+    "batch_size" : 16
+  },
+  "trainer": {
+    "type": "modified_default",
+    "num_epochs": 5,
+    "patience": 1,
+    "grad_norm": 5.0,
+    "validation_metric": "+accuracy",
+    "cuda_device": 0,
+    "optimizer": {
+      "type": "adam",
+      "lr": 0.001
+    },
+    "learning_rate_scheduler": {"type":"adaptive_tuning"},
+    "checkpointer": {"num_serialized_models_to_keep":1}
+  }
+}
