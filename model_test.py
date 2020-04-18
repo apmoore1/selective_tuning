@@ -5,9 +5,8 @@ import tempfile
 
 from allennlp.commands import main
 
+#config_file = "./model_configs/bert.jsonnet"
 config_file = "./model_configs/word_embedding.jsonnet"
-config_file = "./model_configs/bert_embedding.jsonnet"
-#config_file = "./model_configs/bert_alt.jsonnet"
 
 # Use overrides to train on CPU.
 overrides = json.dumps({"trainer": {"cuda_device": 0}})

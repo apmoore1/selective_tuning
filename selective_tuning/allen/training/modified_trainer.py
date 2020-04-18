@@ -11,8 +11,6 @@ import torch
 import torch.distributed as dist
 import torch.optim.lr_scheduler
 from torch.nn.parallel import DistributedDataParallel
-from backpack import backpack
-from backpack.extensions import Variance
 
 from allennlp.common import Lazy, Tqdm
 from allennlp.common.checks import ConfigurationError, check_for_gpu
@@ -365,16 +363,53 @@ class ModifiedTrainer(TrainerBase):
             batch_num_total = self._batch_num_total
 
             self.optimizer.zero_grad()
-
+            # Store the gradients by their parameter name
+            gradient_values = {}
+            # To get groups of parameters use self.optimizer.param_groups
+            # you then get the parameters in list order of have they are defined 
+            # in the config file.
             for batch in batch_group:
                 loss = self.batch_loss(batch, for_training=True)
                 if torch.isnan(loss):
                     raise ValueError("nan loss encountered")
                 loss = loss / len(batch_group)
-                with backpack(Variance()):
-                    loss.backward()
+                loss.backward()
+                if gradient_values:
+                    for name, parameter in self.model.named_parameters():
+                        if parameter.grad is None:
+                            continue
+                        temp_grad = parameter.grad.to(device='cpu', copy=True)
+                        #temp_grad = torch.zeros_like(parameter.grad).copy_(parameter.grad)
+                        temp_grad = torch.unsqueeze(temp_grad, 0)
+                        current_grad = gradient_values[name]
+                        current_grad_dim = current_grad.ndim
+                        if temp_grad.ndim == (current_grad_dim + 1):
+                            current_grad = torch.unsqueeze(current_grad, 0)
+                        current_grad = torch.cat((current_grad, temp_grad), 0)
+                        gradient_values[name] = current_grad
+                else:
+                    for name, parameter in self.model.named_parameters():
+                        if parameter.grad is None:
+                            continue
+                        gradient_values[name] = parameter.grad.to(device='cpu', copy=True)
+                        #temp_grad = torch.zeros_like(parameter.grad)
+                        #gradient_values[name] = temp_grad.copy_(parameter.grad)
+                # This is required so that the gradients are computed sample
+                # and stored
+                self.optimizer.zero_grad()
                 train_loss += loss.item()
-
+            # Need to set the gradient values.
+            for name, parameter in self.model.named_parameters():
+                # parameters that have no gradient are parameters that are not used
+                if parameter.grad is None:
+                    continue
+                # Size batch size is the first dimension
+                parameter_gradient = gradient_values[name]
+                mean_gradient = parameter_gradient.mean(dim=0)
+                # Just an example of how to add to the gradient before the 
+                # optimizer step is called
+                mean_gradient = mean_gradient.to(parameter.device.type)
+                parameter.grad += mean_gradient
             batch_grad_norm = self.rescale_gradients()
 
             # This does nothing if batch_num_total is None or you are using a

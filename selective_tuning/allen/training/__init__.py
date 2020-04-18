@@ -1,2 +1,1 @@
 from selective_tuning.allen.training.modified_trainer import ModifiedTrainer
-from selective_tuning.allen.training import learning_rate_schedulers

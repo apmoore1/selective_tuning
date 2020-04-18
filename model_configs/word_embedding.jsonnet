@@ -15,7 +15,7 @@
   "test_data_path": "./data/sst/trees/test.txt",  
   "evaluate_on_test": true,
   "model": {
-    "type": "modified_basic_classifier",        
+    "type": "basic_classifier",        
     "text_field_embedder": {
       "token_embedders": {
         "tokens": {
@@ -24,24 +24,24 @@
           "trainable": true
           }
       }
-    }
+    },
+    "seq2vec_encoder": {"type":"boe", "embedding_dim":50, "averaged": true}
   },    
   "iterator": {
     "type": "basic",
-    "batch_size" : 32
+    "batch_size" : 1
   },
   "trainer": {
     "type": "modified_default",
     "num_epochs": 5,
     "patience": 1,
-    "grad_norm": 5.0,
     "validation_metric": "+accuracy",
     "cuda_device": 0,
+    "num_gradient_accumulation_steps": 16,
     "optimizer": {
       "type": "adam",
       "lr": 0.001
     },
-    "learning_rate_scheduler": {"type":"adaptive_tuning"},
     "checkpointer": {"num_serialized_models_to_keep":1}
   }
 }
