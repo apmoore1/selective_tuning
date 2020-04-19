@@ -356,6 +356,14 @@ class ModifiedTrainer(TrainerBase):
 
         logger.info("Training")
 
+        # Following the policy set for the [SlantedTriangular learning rate](https://github.com/allenai/allennlp/blob/v1.0.0.rc1/allennlp/training/learning_rate_schedulers/slanted_triangular.py)
+        # where by the last group/default group of the optimizer has to have no 
+        # parameters in it, this is so that the parameters are gropued in a meaningful manner.
+        # This constriant could be relaxed where by the default group contains all of the 
+        # parameters that are not BERT parameters. 
+        if len(self.optimizer.param_groups[-1]['params']) > 0:
+            raise ValueError('The default optimizer parameter group should be empty')
+
         cumulative_batch_group_size = 0
         for batch_group in batch_group_generator_tqdm:
             batches_this_epoch += 1
@@ -363,11 +371,11 @@ class ModifiedTrainer(TrainerBase):
             batch_num_total = self._batch_num_total
 
             self.optimizer.zero_grad()
-            # Store the gradients by their parameter name
-            gradient_values = {}
-            # To get groups of parameters use self.optimizer.param_groups
-            # you then get the parameters in list order of have they are defined 
-            # in the config file.
+            # Store the gradients by layer number defined by the parameter grouping
+            gradient_values = []
+            # This actually stores the gradients so that we keep track of the 
+            # accumulated gradients
+            accumulated_grads = []
             for batch in batch_group:
                 loss = self.batch_loss(batch, for_training=True)
                 if torch.isnan(loss):
@@ -375,41 +383,45 @@ class ModifiedTrainer(TrainerBase):
                 loss = loss / len(batch_group)
                 loss.backward()
                 if gradient_values:
-                    for name, parameter in self.model.named_parameters():
-                        if parameter.grad is None:
-                            continue
-                        temp_grad = parameter.grad.to(device='cpu', copy=True)
-                        #temp_grad = torch.zeros_like(parameter.grad).copy_(parameter.grad)
-                        temp_grad = torch.unsqueeze(temp_grad, 0)
-                        current_grad = gradient_values[name]
-                        current_grad_dim = current_grad.ndim
-                        if temp_grad.ndim == (current_grad_dim + 1):
-                            current_grad = torch.unsqueeze(current_grad, 0)
-                        current_grad = torch.cat((current_grad, temp_grad), 0)
-                        gradient_values[name] = current_grad
+                    for group_index, parameter_group in enumerate(self.optimizer.param_groups):
+                        parameters = parameter_group['params']
+                        parameter_grad_sum = gradient_values[group_index][0]
+                        parameter_grad_sum_square = gradient_values[group_index][1]
+                        for parameter_index, parameter in enumerate(parameters):
+                            if parameter.grad is None:
+                                continue
+                            accumulated_grads[group_index][parameter_index] += parameter.grad
+                            parameter_grad_sum += parameter.grad.sum().item()
+                            parameter_grad_sum_square += (parameter.grad ** 2).sum().item()
+                        gradient_values[group_index] = (parameter_grad_sum, parameter_grad_sum_square)
                 else:
-                    for name, parameter in self.model.named_parameters():
-                        if parameter.grad is None:
-                            continue
-                        gradient_values[name] = parameter.grad.to(device='cpu', copy=True)
-                        #temp_grad = torch.zeros_like(parameter.grad)
-                        #gradient_values[name] = temp_grad.copy_(parameter.grad)
-                # This is required so that the gradients are computed sample
+                    for group_index, parameter_group in enumerate(self.optimizer.param_groups):
+                        parameters = parameter_group['params']
+                        parameter_grad_sum = 0.0
+                        parameter_grad_sum_square = 0.0
+                        accumulated_grads.append([])
+                        for parameter_index, parameter in enumerate(parameters):
+                            if parameter.grad is None:
+                                accumulated_grads[group_index].append(None)
+                                continue
+                            param_grad_copy = torch.zeros_like(parameter.grad)
+                            accumulated_grads[group_index].append(param_grad_copy.copy_(parameter.grad))
+                            parameter_grad_sum += parameter.grad.sum().item()
+                            parameter_grad_sum_square += (parameter.grad ** 2).sum().item()
+                        gradient_values.append((parameter_grad_sum, parameter_grad_sum_square))
+                # This is required so that the gradients are computed by sample
                 # and stored
                 self.optimizer.zero_grad()
                 train_loss += loss.item()
-            # Need to set the gradient values.
-            for name, parameter in self.model.named_parameters():
-                # parameters that have no gradient are parameters that are not used
-                if parameter.grad is None:
-                    continue
-                # Size batch size is the first dimension
-                parameter_gradient = gradient_values[name]
-                mean_gradient = parameter_gradient.mean(dim=0)
-                # Just an example of how to add to the gradient before the 
-                # optimizer step is called
-                mean_gradient = mean_gradient.to(parameter.device.type)
-                parameter.grad += mean_gradient
+            # This resets the gradients of each parameter so that it is the mean 
+            # of the accumulated gradients.
+            for group_index, parameter_group in enumerate(self.optimizer.param_groups):
+                parameters = parameter_group['params']
+                for parameter_index, parameter in enumerate(parameters):
+                    if parameter.grad is None:
+                        continue
+                    parameter.grad = accumulated_grads[group_index][parameter_index]
+                    parameter.grad = parameter.grad / self._num_gradient_accumulation_steps
             batch_grad_norm = self.rescale_gradients()
 
             # This does nothing if batch_num_total is None or you are using a
